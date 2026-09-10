@@ -1,0 +1,20 @@
+# Compiled binaries
+/bin/
+/docket
+/docket-server
+
+# Go test + build artifacts
+*.test
+*.out
+coverage.html
+
+# Local environment
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+

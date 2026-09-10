@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A "service container" is a Docker container GitHub starts alongside the
+    # job, on the same network. We test against a real PostgreSQL rather than a
+    # mock, because the logic under test IS SQL -- mocking it would test nothing.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: docket_test
+        ports:
+          - 5432:5432
+        # Don't start the job until Postgres actually answers. Without this the
+        # first test races the container's startup and fails intermittently.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/docket_test?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Read the version from go.mod so CI and local can never drift apart.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Apply migrations
+        run: go run ./cmd/docket migrate up
+
+      # -race enables the data race detector. For a concurrency project this is
+      # not optional: it catches two goroutines touching the same memory without
+      # synchronisation, which is otherwise invisible until production.
+      - name: Test
+        run: go test -race ./...
