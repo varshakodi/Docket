@@ -11,6 +11,12 @@ import (
 const usage = `docket - a durable job queue on PostgreSQL
 
 Usage:
+  docket enqueue --queue NAME --payload JSON [--key K] [--delay 30s] [--priority N]
+  docket work    --queue NAME              claim and run jobs until Ctrl-C
+  docket status  ID                        show one job
+  docket dlq     list [--queue NAME]       show jobs that gave up
+  docket dlq     requeue ID                give a dead job a fresh start
+
   docket migrate up       apply all pending migrations
   docket migrate down     roll back the most recent migration
   docket migrate status   show which migrations have been applied
@@ -34,6 +40,14 @@ func run(args []string) error {
 	}
 
 	switch args[0] {
+	case "enqueue":
+		return cmdEnqueue(args[1:])
+	case "work":
+		return cmdWork(args[1:])
+	case "status":
+		return cmdStatus(args[1:])
+	case "dlq":
+		return cmdDLQ(args[1:])
 	case "migrate":
 		if len(args) < 2 {
 			return fmt.Errorf("migrate needs a direction: up, down or status")

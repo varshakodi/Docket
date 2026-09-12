@@ -60,5 +60,7 @@ jobs:
       # -race enables the data race detector. For a concurrency project this is
       # not optional: it catches two goroutines touching the same memory without
       # synchronisation, which is otherwise invisible until production.
+      # -p 1 runs packages one at a time. Several packages share the same
+      # test database and reset it between tests, so they must not overlap.
       - name: Test
-        run: go test -race ./...
+        run: go test -race -p 1 ./...
