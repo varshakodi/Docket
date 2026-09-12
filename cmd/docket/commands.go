@@ -115,6 +115,8 @@ func printJob(j store.Job) {
 func cmdWork(args []string) error {
 	fs := flag.NewFlagSet("work", flag.ContinueOnError)
 	queue := fs.String("queue", "default", "queue to pull from")
+	concurrency := fs.Int("concurrency", 1, "how many jobs to run at once")
+	grace := fs.Duration("grace", 25*time.Second, "on shutdown, how long to let running jobs finish")
 	lease := fs.Duration("lease", 30*time.Second, "how long a claim lasts without a heartbeat")
 	poll := fs.Duration("poll", 500*time.Millisecond, "wait between checks when the queue is empty")
 	reapEvery := fs.Duration("reap-interval", 5*time.Second, "how often to sweep for dead workers' jobs")
@@ -144,11 +146,13 @@ func cmdWork(args []string) error {
 	go reaper.Run(ctx, s, *reapEvery, bo, log)
 
 	w := worker.New(s, worker.Config{
-		Queue:        *queue,
-		WorkerID:     fmt.Sprintf("%s-%d", host, os.Getpid()),
-		Lease:        *lease,
-		PollInterval: *poll,
-		Backoff:      bo,
+		Queue:         *queue,
+		WorkerID:      fmt.Sprintf("%s-%d", host, os.Getpid()),
+		Concurrency:   *concurrency,
+		Lease:         *lease,
+		PollInterval:  *poll,
+		ShutdownGrace: *grace,
+		Backoff:       bo,
 	}, demoHandler, log)
 
 	return w.Run(ctx)

@@ -12,7 +12,8 @@ const usage = `docket - a durable job queue on PostgreSQL
 
 Usage:
   docket enqueue --queue NAME --payload JSON [--key K] [--delay 30s] [--priority N]
-  docket work    --queue NAME              claim and run jobs until Ctrl-C
+  docket work    --queue NAME [--concurrency N] [--grace 25s]
+                                           claim and run jobs until Ctrl-C
   docket status  ID                        show one job
   docket dlq     list [--queue NAME]       show jobs that gave up
   docket dlq     requeue ID                give a dead job a fresh start
