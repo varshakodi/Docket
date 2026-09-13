@@ -64,3 +64,37 @@ jobs:
       # test database and reset it between tests, so they must not overlap.
       - name: Test
         run: go test -race -p 1 ./...
+
+  # Proves the Docker path works end to end: build the image, start Postgres,
+  # migrate, run a worker, enqueue a job, and see it succeed. This is the
+  # "clone and run" promise from the README, checked on every push.
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image and start the stack
+        run: docker compose up -d --build
+
+      - name: Enqueue a job (retries until migrations have finished)
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose run --rm --no-deps worker enqueue --queue default --payload '{"sleep_ms":200}'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "could not enqueue"; docker compose logs; exit 1
+
+      - name: Wait for the worker to finish it
+        run: |
+          for i in $(seq 1 15); do
+            docker compose run --rm --no-deps worker status 1 | tee /tmp/status.txt
+            if grep -q succeeded /tmp/status.txt; then exit 0; fi
+            sleep 2
+          done
+          echo "job never succeeded"; docker compose logs; exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

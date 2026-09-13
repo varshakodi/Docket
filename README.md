@@ -12,6 +12,21 @@ backoff and land in a dead-letter queue when they give up.
 There is no queue server. **Postgres is the queue** — storage and coordination in
 one place — which is what makes the whole thing about a thousand lines.
 
+```
+  producers                                    workers (any number)
+  ─────────                                    ────────────────────
+  docket enqueue ──┐                       ┌── claim ── run handler ── complete
+  your app  ───────┤                       │       heartbeat every lease/3
+                   ▼                       ▼
+            ┌──────────────────────────────────────┐
+            │  PostgreSQL          jobs table       │
+            │  pending → running → succeeded/dead  │
+            └──────────────────────────────────────┘
+                                   ▲
+                    reaper (in every worker) ── returns expired leases
+                    to pending; recovers jobs from crashed workers
+```
+
 ## Status
 
 Working and tested: enqueue, claim, complete, retries with jittered backoff,
@@ -25,7 +40,16 @@ Not yet: gRPC API, Prometheus metrics. See [Roadmap](#roadmap).
 
 ## Quick start
 
-You need Go 1.27+ and a PostgreSQL 14+ server.
+**With Docker** (nothing else needed):
+
+```bash
+docker compose up -d      # Postgres + migrations + a 4-lane worker
+docker compose run --rm worker enqueue --queue default --payload '{"sleep_ms":1000}'
+docker compose run --rm worker status 1
+docker compose logs -f worker
+```
+
+**Without Docker** — Go 1.27+ and a local PostgreSQL 14+:
 
 ```bash
 createdb docket
@@ -41,6 +65,11 @@ go build -o bin/docket ./cmd/docket
 ```
 
 Set `DATABASE_URL` to point somewhere other than `localhost:5432/docket`.
+
+To see crash recovery with your own eyes: enqueue a job with
+`{"sleep_ms": 10000}`, start a worker with `--lease 3s --reap-interval 1s`,
+`kill -9` it mid-job, start another worker, and watch `status` go from
+`running` (owned by the dead one) to `succeeded` with `attempts: 2`.
 
 The bundled worker runs a demo handler that reacts to two payload fields:
 `{"sleep_ms": N}` simulates slow work and `{"fail": true}` simulates a failure.
@@ -278,21 +307,20 @@ What the numbers say:
 ## Layout
 
 ```
-cmd/docket/          CLI
+cmd/docket/          CLI, plus the real-process fault-injection tests
 internal/store/      every SQL statement lives here; nothing else touches the database
 internal/worker/     claim loop, concurrency, heartbeat, outcome recording, graceful shutdown
 internal/reaper/     expired-lease sweep
 internal/backoff/    exponential backoff with full jitter
+internal/bench/      benchmark harness
 migrations/          schema, embedded into the binary
+Dockerfile           two-stage build; ships only a static binary on alpine
+compose.yaml         Postgres + migrate + worker
 ```
 
-## Roadmap
+## Roadmap and non-goals
 
-- gRPC API for producers in other languages
-- Prometheus metrics: queue depth, oldest pending age, throughput, retry rate
-- `docker-compose.yml` for one-command local setup
-- Batched heartbeats: one round trip per worker per tick instead of one per
-  running job
-
-Deliberately out of scope: job dependencies / workflows, exactly-once delivery,
-a web dashboard, any non-Postgres backend.
+What might come next, and what was deliberately left out and why, are in
+[FUTURE.md](FUTURE.md). The short version: gRPC and Prometheus metrics would
+fit; workflows, exactly-once delivery, dashboards and non-Postgres backends
+would not.

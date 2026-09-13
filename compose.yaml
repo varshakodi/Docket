@@ -1,0 +1,47 @@
+# One-command local setup:
+#
+#   docker compose up -d            start Postgres, apply migrations, run a worker
+#   docker compose run --rm worker enqueue --queue default --payload '{"sleep_ms":1000}'
+#   docker compose run --rm worker status 1
+#   docker compose logs -f worker
+#   docker compose down -v          stop everything and delete the data volume
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: docket
+      POSTGRES_PASSWORD: docket
+      POSTGRES_DB: docket
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docket -d docket"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # One-shot: applies migrations, then exits. The worker waits for it.
+  migrate:
+    build: .
+    command: ["migrate", "up"]
+    environment:
+      DATABASE_URL: postgres://docket:docket@postgres:5432/docket?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["work", "--queue", "default", "--concurrency", "4"]
+    environment:
+      DATABASE_URL: postgres://docket:docket@postgres:5432/docket?sslmode=disable
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:
