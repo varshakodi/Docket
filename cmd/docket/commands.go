@@ -162,12 +162,16 @@ func cmdWork(args []string) error {
 // It reads two optional payload fields so the queue's behaviour can be
 // exercised from the command line:
 //
-//	{"sleep_ms": 5000}   pretend the job takes 5 seconds
-//	{"fail": true}       pretend the job failed
+//	{"sleep_ms": 5000}        pretend the job takes 5 seconds
+//	{"fail": true}            pretend the job failed
+//	{"crash_on_attempt": 1}   on that attempt, do the work then kill the
+//	                          whole process before recording success --
+//	                          the "at-least-once" scenario
 func demoHandler(ctx context.Context, j store.Job) error {
 	var p struct {
-		SleepMS int  `json:"sleep_ms"`
-		Fail    bool `json:"fail"`
+		SleepMS        int  `json:"sleep_ms"`
+		Fail           bool `json:"fail"`
+		CrashOnAttempt int  `json:"crash_on_attempt"`
 	}
 	_ = json.Unmarshal(j.Payload, &p) // missing fields just stay zero
 
@@ -180,6 +184,10 @@ func demoHandler(ctx context.Context, j store.Job) error {
 	}
 	if p.Fail {
 		return errors.New("payload asked this job to fail")
+	}
+	if p.CrashOnAttempt > 0 && p.CrashOnAttempt == j.Attempts {
+		fmt.Printf("[job %d] work done; crashing before acknowledging\n", j.ID)
+		os.Exit(1)
 	}
 	fmt.Printf("[job %d] handled payload %s\n", j.ID, j.Payload)
 	return nil

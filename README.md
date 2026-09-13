@@ -18,7 +18,10 @@ Working and tested: enqueue, claim, complete, retries with jittered backoff,
 leases and heartbeats, crash recovery, dead-letter queue, concurrency, graceful
 shutdown, idempotent enqueue.
 
-Not yet: gRPC API, Prometheus metrics, benchmark harness. See [Roadmap](#roadmap).
+Also: a benchmark harness with a naive-locking comparison, and fault-injection
+tests that `SIGKILL` real worker processes. See [Benchmarks](#benchmarks).
+
+Not yet: gRPC API, Prometheus metrics. See [Roadmap](#roadmap).
 
 ## Quick start
 
@@ -161,6 +164,7 @@ docket work    --queue NAME [--concurrency N] [--lease 30s] [--grace 25s]
 docket status  ID
 docket dlq     list [--queue NAME] [--limit N]
 docket dlq     requeue ID
+docket bench   [--jobs N] [--workers 1,2,4,8,16] [--batch N] [--mode skip-locked|naive|both]
 docket migrate up | down | status
 ```
 
@@ -202,6 +206,75 @@ The tests that carry the correctness claims:
 | `TestCompleteRejectsStaleWorker` | a worker that lost its lease cannot overwrite the new owner's work |
 | `TestWorkerSurvivesPanickingHandler` | a panicking job is retried; the worker keeps running |
 
+Two more build the real binary and run it as separate processes, because a
+`SIGKILL` gives a process no chance to run any cleanup code — which is the
+case the lease design exists for:
+
+| test | proves |
+|---|---|
+| `TestSIGKILLMidJobIsRecoveredByAnotherProcess` | a worker `SIGKILL`ed mid-job leaves an orphaned `running` row; a second process's reaper recovers it and the job completes, `attempts = 2` |
+| `TestCrashAfterWorkBeforeAckIsRedelivered` | a worker that finishes the work and dies before recording success has the job redelivered — the at-least-once case, demonstrated rather than described |
+
+## Benchmarks
+
+`docket bench` seeds N jobs, runs W workers with a no-op handler, and reports
+throughput and claim latency. Workers are goroutines, each claiming on its own
+database connection — the contention is real, the run is deterministic, and it
+works in CI. It runs the whole matrix twice: once with the real claim query and
+once with `FOR UPDATE` alone, no `SKIP LOCKED`, so the difference is measured
+rather than asserted.
+
+Numbers below: Apple Silicon MacBook Pro, local PostgreSQL 17, single run
+(expect ±10–15% between runs). Reproduce with `docket bench`.
+
+**Batch 10** — 5,000 jobs, 10 claimed per round trip:
+
+```
+MODE          WORKERS   JOBS/SEC  CLAIM p50        p95        p99   SCALING
+skip-locked         1       5269     0.25ms     0.51ms     0.73ms      100%
+skip-locked         2       8211     0.34ms     0.57ms     0.70ms       78%
+skip-locked         4      13104     0.44ms     0.78ms     2.40ms       62%
+skip-locked         8      17607     0.61ms     1.83ms     3.32ms       42%
+skip-locked        16      19078     1.29ms     3.78ms    10.30ms       23%
+naive               1       6220     0.22ms     0.40ms     0.52ms      100%
+naive               2       9576     0.31ms     0.49ms     0.57ms       77%
+naive               4      14954     0.41ms     0.92ms     1.12ms       60%
+naive               8      15847     0.70ms     3.22ms     7.41ms       32%
+naive              16      16387     0.93ms    10.46ms    15.58ms       16%
+```
+
+**Batch 1** — 3,000 jobs, one claim per job (the highest-contention shape):
+
+```
+MODE          WORKERS   JOBS/SEC  CLAIM p50        p95        p99   SCALING
+skip-locked         1       3261     0.16ms     0.25ms     0.33ms      100%
+skip-locked         4       7756     0.26ms     0.39ms     0.52ms       59%
+skip-locked        16      10137     0.62ms     1.39ms     2.28ms       19%
+naive               1       3444     0.16ms     0.24ms     0.29ms      100%
+naive               4       5000     0.35ms     1.04ms     1.68ms       36%
+naive              16       4722     0.50ms     3.77ms    17.35ms        9%
+```
+
+What the numbers say:
+
+- **`SKIP LOCKED` is what lets 16 workers be faster than 4.** At batch 1 the
+  naive query *gets slower* going from 4 to 16 workers (5,000 → 4,700 jobs/s)
+  while `SKIP LOCKED` keeps climbing (7,800 → 10,100). At 16 workers that is
+  2.1× the throughput and a p99 claim latency of 2.3 ms against 17.4 ms.
+- **Contention is proportional to how often workers claim.** With batches of
+  10, each claim transaction is so short (~0.3 ms) that lock waits barely
+  register until 8+ workers, and the gap shows up as tail latency (p99 10 ms
+  vs 16 ms) more than throughput. Batch size matters as much as the locking
+  clause.
+- **Neither mode scales linearly.** Efficiency falls to ~20% at 16 workers
+  because one PostgreSQL instance is the shared bottleneck: every claim and
+  every completion is a write to the same table. That is the ceiling of a
+  database-backed queue, and the reason this design targets thousands of jobs
+  per second, not hundreds of thousands.
+- **With one or two workers the naive query is marginally faster.** `SKIP
+  LOCKED` costs a little and buys nothing when there is nobody to skip. It
+  earns its keep only under contention — which is the only time it matters.
+
 ## Layout
 
 ```
@@ -217,9 +290,9 @@ migrations/          schema, embedded into the binary
 
 - gRPC API for producers in other languages
 - Prometheus metrics: queue depth, oldest pending age, throughput, retry rate
-- Benchmark harness, including a comparison against a naive `FOR UPDATE`
-  (no `SKIP LOCKED`) claim to show where the scaling comes from
 - `docker-compose.yml` for one-command local setup
+- Batched heartbeats: one round trip per worker per tick instead of one per
+  running job
 
 Deliberately out of scope: job dependencies / workflows, exactly-once delivery,
 a web dashboard, any non-Postgres backend.

@@ -17,6 +17,8 @@ Usage:
   docket status  ID                        show one job
   docket dlq     list [--queue NAME]       show jobs that gave up
   docket dlq     requeue ID                give a dead job a fresh start
+  docket bench   [--jobs N] [--workers 1,2,4,8,16] [--mode both]
+                                           measure throughput and claim latency
 
   docket migrate up       apply all pending migrations
   docket migrate down     roll back the most recent migration
@@ -49,6 +51,8 @@ func run(args []string) error {
 		return cmdStatus(args[1:])
 	case "dlq":
 		return cmdDLQ(args[1:])
+	case "bench":
+		return cmdBench(args[1:])
 	case "migrate":
 		if len(args) < 2 {
 			return fmt.Errorf("migrate needs a direction: up, down or status")
