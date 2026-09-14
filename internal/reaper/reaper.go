@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/varshakodi/docket/internal/backoff"
+	"github.com/varshakodi/docket/internal/metrics"
 	"github.com/varshakodi/docket/internal/store"
 )
 
@@ -43,6 +44,7 @@ func Run(ctx context.Context, s *store.Store, interval time.Duration, bo backoff
 			continue
 		}
 		if n > 0 {
+			metrics.LeasesReaped.Add(float64(n))
 			log.Warn("recovered jobs from dead workers", "count", n)
 		}
 	}

@@ -1,0 +1,87 @@
+// The Docket API contract. Any language with a gRPC toolchain can generate a
+// client from this file and enqueue or inspect jobs without touching the
+// database directly.
+syntax = "proto3";
+
+package docket.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/varshakodi/docket/api/docketv1;docketv1";
+
+service Docket {
+  // Add a job. Returns immediately after the job is durably stored.
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+  // Fetch one job by ID.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  // Backlog per queue and state.
+  rpc Stats(StatsRequest) returns (StatsResponse);
+  // Give a dead job a fresh attempt budget.
+  rpc RequeueDead(RequeueDeadRequest) returns (RequeueDeadResponse);
+}
+
+message EnqueueRequest {
+  string queue = 1;                          // default "default"
+  bytes payload = 2;                         // JSON; default {}
+  int32 priority = 3;                        // higher runs first
+  int32 max_attempts = 4;                    // default 5
+  google.protobuf.Timestamp run_at = 5;      // unset = as soon as possible
+  string idempotency_key = 6;                // optional; dedupes repeat enqueues
+}
+
+message EnqueueResponse {
+  int64 job_id = 1;
+  bool deduplicated = 2;  // true if an existing job with the same key was returned
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_PENDING = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_SUCCEEDED = 3;
+  JOB_STATE_DEAD = 4;
+}
+
+message Job {
+  int64 id = 1;
+  string queue = 2;
+  bytes payload = 3;
+  JobState state = 4;
+  int32 priority = 5;
+  int32 attempts = 6;
+  int32 max_attempts = 7;
+  google.protobuf.Timestamp run_at = 8;
+  google.protobuf.Timestamp lease_expires_at = 9;  // unset unless running
+  string worker_id = 10;                           // empty unless running
+  string last_error = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp completed_at = 13;     // unset unless succeeded
+}
+
+message GetJobRequest {
+  int64 job_id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message StatsRequest {
+  string queue = 1;  // empty = all queues
+}
+
+message QueueDepth {
+  string queue = 1;
+  JobState state = 2;
+  int64 count = 3;
+}
+
+message StatsResponse {
+  repeated QueueDepth depths = 1;
+}
+
+message RequeueDeadRequest {
+  int64 job_id = 1;
+}
+
+message RequeueDeadResponse {}

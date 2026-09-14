@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/varshakodi/docket/internal/backoff"
+	"github.com/varshakodi/docket/internal/metrics"
 	"github.com/varshakodi/docket/internal/reaper"
 	"github.com/varshakodi/docket/internal/store"
 	"github.com/varshakodi/docket/internal/worker"
@@ -32,11 +33,15 @@ func cmdEnqueue(args []string) error {
 	key := fs.String("key", "", "idempotency key (dedupes repeat enqueues)")
 	delay := fs.Duration("delay", 0, "run no earlier than this far in the future")
 	maxAttempts := fs.Int("max-attempts", 5, "give up after this many tries")
+	server := fs.String("server", "", "enqueue via a docket-server (host:port) instead of the database")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if !json.Valid([]byte(*payload)) {
 		return fmt.Errorf("--payload is not valid JSON")
+	}
+	if *server != "" {
+		return remoteEnqueue(*server, *queue, *payload, *priority, *maxAttempts, *key, *delay)
 	}
 
 	ctx := context.Background()
@@ -68,14 +73,22 @@ func cmdEnqueue(args []string) error {
 	return nil
 }
 
-// docket status <id>
+// docket status <id> [--server host:port]
 func cmdStatus(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: docket status <job-id>")
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	server := fs.String("server", "", "query a docket-server (host:port) instead of the database")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	id, err := strconv.ParseInt(args[0], 10, 64)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: docket status <job-id> [--server host:port]")
+	}
+	id, err := strconv.ParseInt(fs.Arg(0), 10, 64)
 	if err != nil {
-		return fmt.Errorf("invalid job id %q", args[0])
+		return fmt.Errorf("invalid job id %q", fs.Arg(0))
+	}
+	if *server != "" {
+		return remoteStatus(*server, id)
 	}
 
 	ctx := context.Background()
@@ -122,6 +135,7 @@ func cmdWork(args []string) error {
 	reapEvery := fs.Duration("reap-interval", 5*time.Second, "how often to sweep for dead workers' jobs")
 	boBase := fs.Duration("backoff-base", time.Second, "first retry delay (doubles each failure)")
 	boMax := fs.Duration("backoff-max", 5*time.Minute, "longest retry delay")
+	metricsAddr := fs.String("metrics-addr", ":9090", "serve Prometheus metrics at this address (empty to disable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -144,6 +158,11 @@ func cmdWork(args []string) error {
 	// other worker's reaper recovers its jobs -- there is no single point of
 	// failure to keep alive.
 	go reaper.Run(ctx, s, *reapEvery, bo, log)
+
+	if *metricsAddr != "" {
+		go metrics.Serve(ctx, *metricsAddr, log)
+		go metrics.PollQueueStats(ctx, s, 5*time.Second, log)
+	}
 
 	w := worker.New(s, worker.Config{
 		Queue:         *queue,

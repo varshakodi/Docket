@@ -39,9 +39,6 @@ value:
 - **Batched heartbeats.** Today each running job renews its own lease on its
   own timer. With high concurrency that is many small round trips; one
   `UPDATE ... WHERE id = ANY($1)` per worker per tick would do.
-- **Prometheus metrics.** Queue depth, oldest pending age, throughput, retry
-  rate, dead-letter count. The `store` package already has the queries.
-- **gRPC API** so producers in other languages can enqueue.
 - **Cron-style recurring jobs.** A `schedules` table and a small loop that
   enqueues on time. Straightforward, but a separate feature.
 - **Per-queue rate limits.** A token bucket in front of `Claim`.

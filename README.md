@@ -29,24 +29,27 @@ one place — which is what makes the whole thing about a thousand lines.
 
 ## Status
 
-Working and tested: enqueue, claim, complete, retries with jittered backoff,
-leases and heartbeats, crash recovery, dead-letter queue, concurrency, graceful
-shutdown, idempotent enqueue.
+Complete. Enqueue, claim, complete; retries with jittered backoff; leases,
+heartbeats and crash recovery; dead-letter queue; concurrency; graceful
+shutdown; idempotent enqueue; Prometheus metrics; a gRPC API; a benchmark
+harness with a naive-locking comparison; fault-injection tests that `SIGKILL`
+real worker processes; a Docker image and compose stack, both exercised in CI.
 
-Also: a benchmark harness with a naive-locking comparison, and fault-injection
-tests that `SIGKILL` real worker processes. See [Benchmarks](#benchmarks).
-
-Not yet: gRPC API, Prometheus metrics. See [Roadmap](#roadmap).
+What was deliberately left out, and why, is in [FUTURE.md](FUTURE.md).
 
 ## Quick start
 
 **With Docker** (nothing else needed):
 
 ```bash
-docker compose up -d      # Postgres + migrations + a 4-lane worker
+docker compose up -d      # Postgres + migrations + a 4-lane worker + the gRPC API
 docker compose run --rm worker enqueue --queue default --payload '{"sleep_ms":1000}'
 docker compose run --rm worker status 1
 docker compose logs -f worker
+
+# the same, but through the API instead of the database
+docker compose run --rm worker enqueue --server api:50051 --queue default --payload '{}'
+docker compose run --rm worker status  --server api:50051 2
 ```
 
 **Without Docker** — Go 1.27+ and a local PostgreSQL 14+:
@@ -184,13 +187,61 @@ enqueues return the original job instead of creating a second one.
 All timestamps are the database's `now()`, never a worker's clock, so clock
 skew between machines cannot corrupt lease arithmetic.
 
+## Metrics
+
+Every worker serves Prometheus metrics at `--metrics-addr` (default `:9090`).
+
+| metric | type | what it tells you |
+|---|---|---|
+| `docket_queue_depth{queue,state}` | gauge | backlog per queue and state — the number to alert on |
+| `docket_oldest_pending_age_seconds{queue}` | gauge | how long the head of the queue has been waiting — "are we falling behind?" A deep queue draining fast is fine; a shallow one whose head is an hour old is not |
+| `docket_jobs_in_flight{queue}` | gauge | jobs this worker is running right now |
+| `docket_jobs_completed_total{queue,outcome}` | counter | `succeeded`, `retried`, `dead`, `released`, `abandoned`, or `unrecorded` (outcome could not be written — alert on this) |
+| `docket_job_duration_seconds{queue}` | histogram | handler time |
+| `docket_claim_latency_seconds` | histogram | claim round-trip; climbs under contention or database strain |
+| `docket_leases_reaped_total` | counter | jobs recovered from workers that stopped responding; a steady rate means workers are dying |
+
+Depth and age come from one query every 5 s, because the backlog lives in the
+database rather than in any worker's memory. The rest update in-process as jobs
+run.
+
+## gRPC API
+
+`docket-server` exposes the queue over gRPC (default `:50051`) so services in
+any language can enqueue and inspect jobs without database credentials. The
+contract is [api/docketv1/docket.proto](api/docketv1/docket.proto):
+
+```protobuf
+service Docket {
+  rpc Enqueue     (EnqueueRequest)     returns (EnqueueResponse);
+  rpc GetJob      (GetJobRequest)      returns (GetJobResponse);
+  rpc Stats       (StatsRequest)       returns (StatsResponse);
+  rpc RequeueDead (RequeueDeadRequest) returns (RequeueDeadResponse);
+}
+```
+
+The generated Go code is committed, so building needs no `protoc`;
+`go generate ./api/...` regenerates it after editing the `.proto`. Server
+reflection is enabled, so `grpcurl -plaintext localhost:50051 list` works
+with no extra setup.
+
+The CLI doubles as a client: `docket enqueue --server localhost:50051 ...` and
+`docket status --server localhost:50051 ID`.
+
+Workers do **not** go through the API. The claim query *is* the queue, and
+putting an RPC hop in front of it would add latency and a failure point for
+nothing. The API is for producers; workers talk to Postgres.
+
 ## CLI
 
 ```
+docket-server  [--addr :50051]
+
 docket enqueue --queue NAME --payload JSON [--key K] [--delay 30s] [--priority N] [--max-attempts N]
 docket work    --queue NAME [--concurrency N] [--lease 30s] [--grace 25s]
                [--reap-interval 5s] [--backoff-base 1s] [--backoff-max 5m]
-docket status  ID
+               [--metrics-addr :9090]
+docket status  [--server HOST:PORT] ID
 docket dlq     list [--queue NAME] [--limit N]
 docket dlq     requeue ID
 docket bench   [--jobs N] [--workers 1,2,4,8,16] [--batch N] [--mode skip-locked|naive|both]
@@ -307,12 +358,16 @@ What the numbers say:
 ## Layout
 
 ```
-cmd/docket/          CLI, plus the real-process fault-injection tests
+cmd/docket/          CLI (also a gRPC client with --server), plus the real-process fault-injection tests
+cmd/docket-server/   the gRPC API server
+api/docketv1/        the .proto contract and the Go code generated from it
+internal/api/        gRPC service implementation: protobuf in, store calls, protobuf out
 internal/store/      every SQL statement lives here; nothing else touches the database
 internal/worker/     claim loop, concurrency, heartbeat, outcome recording, graceful shutdown
 internal/reaper/     expired-lease sweep
 internal/backoff/    exponential backoff with full jitter
 internal/bench/      benchmark harness
+internal/metrics/    Prometheus metrics endpoint and the queue-depth poller
 migrations/          schema, embedded into the binary
 Dockerfile           two-stage build; ships only a static binary on alpine
 compose.yaml         Postgres + migrate + worker
@@ -321,6 +376,6 @@ compose.yaml         Postgres + migrate + worker
 ## Roadmap and non-goals
 
 What might come next, and what was deliberately left out and why, are in
-[FUTURE.md](FUTURE.md). The short version: gRPC and Prometheus metrics would
-fit; workflows, exactly-once delivery, dashboards and non-Postgres backends
-would not.
+[FUTURE.md](FUTURE.md). The short version: workflows, exactly-once delivery,
+dashboards and non-Postgres backends are out by design; batched heartbeats
+and cron-style schedules would fit.

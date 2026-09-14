@@ -11,12 +11,12 @@ RUN go mod download
 COPY . .
 # CGO_ENABLED=0 produces a fully static binary with no libc dependency, so it
 # can run in the minimal image below.
-RUN CGO_ENABLED=0 go build -o /out/docket ./cmd/docket
+RUN CGO_ENABLED=0 go build -o /out/ ./cmd/...
 
 # Stage 2: run. Only the binary is copied across; the toolchain never ships.
 FROM alpine:3.20
 RUN adduser -D -u 10001 docket
 USER docket
-COPY --from=build /out/docket /usr/local/bin/docket
+COPY --from=build /out/ /usr/local/bin/
 ENTRYPOINT ["docket"]
 CMD ["help"]

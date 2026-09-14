@@ -76,20 +76,22 @@ jobs:
       - name: Build image and start the stack
         run: docker compose up -d --build
 
-      - name: Enqueue a job (retries until migrations have finished)
+      # Enqueue THROUGH THE gRPC API, not the database, so this also proves the
+      # api service is up and wired correctly. Retries until it answers.
+      - name: Enqueue a job via the gRPC API
         run: |
           for i in $(seq 1 30); do
-            if docker compose run --rm --no-deps worker enqueue --queue default --payload '{"sleep_ms":200}'; then
+            if docker compose run --rm --no-deps worker enqueue --server api:50051 --queue default --payload '{"sleep_ms":200}'; then
               exit 0
             fi
             sleep 2
           done
           echo "could not enqueue"; docker compose logs; exit 1
 
-      - name: Wait for the worker to finish it
+      - name: Wait for the worker to finish it (checked via the API)
         run: |
           for i in $(seq 1 15); do
-            docker compose run --rm --no-deps worker status 1 | tee /tmp/status.txt
+            docker compose run --rm --no-deps worker status --server api:50051 1 | tee /tmp/status.txt
             if grep -q succeeded /tmp/status.txt; then exit 0; fi
             sleep 2
           done

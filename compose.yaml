@@ -1,10 +1,14 @@
 # One-command local setup:
 #
-#   docker compose up -d            start Postgres, apply migrations, run a worker
+#   docker compose up -d            Postgres, migrations, a worker, and the gRPC API on :50051
 #   docker compose run --rm worker enqueue --queue default --payload '{"sleep_ms":1000}'
 #   docker compose run --rm worker status 1
 #   docker compose logs -f worker
 #   docker compose down -v          stop everything and delete the data volume
+#
+# Or go through the API instead of the database:
+#   docker compose run --rm worker enqueue --server api:50051 --queue default --payload '{}'
+#   docker compose run --rm worker status  --server api:50051 1
 
 services:
   postgres:
@@ -38,6 +42,20 @@ services:
     command: ["work", "--queue", "default", "--concurrency", "4"]
     environment:
       DATABASE_URL: postgres://docket:docket@postgres:5432/docket?sslmode=disable
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # gRPC API for producers that should not have database credentials.
+  api:
+    build: .
+    entrypoint: ["docket-server"]
+    command: ["--addr", ":50051"]
+    environment:
+      DATABASE_URL: postgres://docket:docket@postgres:5432/docket?sslmode=disable
+    ports:
+      - "50051:50051"
     depends_on:
       migrate:
         condition: service_completed_successfully

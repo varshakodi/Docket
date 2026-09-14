@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/varshakodi/docket/internal/backoff"
+	"github.com/varshakodi/docket/internal/metrics"
 	"github.com/varshakodi/docket/internal/store"
 )
 
@@ -120,7 +121,9 @@ claimLoop:
 		// Slots can only be freed (never taken) by anyone but this loop, so
 		// this count is a safe lower bound.
 		free := 1 + (cap(sem) - len(sem))
+		claimStart := time.Now()
 		jobs, err := w.store.Claim(ctx, w.cfg.Queue, free, w.cfg.WorkerID, w.cfg.Lease)
+		metrics.ClaimLatency.Observe(time.Since(claimStart).Seconds())
 		if err != nil {
 			<-sem
 			if ctx.Err() != nil {
@@ -197,6 +200,8 @@ func (w *Worker) shutdown(hardStop context.CancelFunc, inflight *sync.WaitGroup)
 // then record the outcome.
 func (w *Worker) runJob(ctx context.Context, j store.Job) {
 	log := w.log.With("job", j.ID, "attempt", j.Attempts)
+	metrics.InFlight.WithLabelValues(w.cfg.Queue).Inc()
+	defer metrics.InFlight.WithLabelValues(w.cfg.Queue).Dec()
 
 	// jobCtx is what the handler sees. It is cancelled if the lease is lost
 	// (by the heartbeat goroutine) or on hard stop (via its parent).
@@ -235,10 +240,16 @@ func (w *Worker) runJob(ctx context.Context, j store.Job) {
 	err := w.safeHandle(jobCtx, j)
 	cancel() // stop the heartbeat
 	<-heartbeatDone
+	metrics.JobDuration.WithLabelValues(w.cfg.Queue).Observe(time.Since(start).Seconds())
 
 	// Record the outcome with a context that cannot be cancelled: even if
 	// we are shutting down, what happened to this job must be written.
 	recordCtx := context.WithoutCancel(ctx)
+
+	// Whatever happens below, count it. "unrecorded" means we could not
+	// write the outcome to the database -- worth alerting on.
+	outcome := "unrecorded"
+	defer func() { metrics.JobsCompleted.WithLabelValues(w.cfg.Queue, outcome).Inc() }()
 
 	switch {
 	case err == nil:
@@ -246,15 +257,18 @@ func (w *Worker) runJob(ctx context.Context, j store.Job) {
 			log.Warn("finished, but could not record success; job will run again", "err", cerr)
 			return
 		}
+		outcome = "succeeded"
 		log.Info("job succeeded", "took", time.Since(start).Round(time.Millisecond))
 
 	case ctx.Err() != nil:
 		// Hard stop during shutdown. The job was already released; nothing
 		// to record.
+		outcome = "released"
 		log.Warn("stopped mid-job for shutdown; released for another worker")
 
 	case leaseLost.Load():
 		// Someone else owns it now. Any write we make would be rejected.
+		outcome = "abandoned"
 		log.Warn("abandoned: another worker took over after our lease expired")
 
 	case errors.Is(err, ErrPermanent):
@@ -262,6 +276,7 @@ func (w *Worker) runJob(ctx context.Context, j store.Job) {
 			log.Warn("could not record permanent failure", "err", derr)
 			return
 		}
+		outcome = "dead"
 		log.Error("permanent failure; sent to dead-letter queue without retry", "err", err)
 
 	default:
@@ -269,12 +284,15 @@ func (w *Worker) runJob(ctx context.Context, j store.Job) {
 		ferr := w.store.Fail(recordCtx, j.ID, w.cfg.WorkerID, err.Error(), delay)
 		switch {
 		case errors.Is(ferr, store.ErrLeaseLost):
+			outcome = "abandoned"
 			log.Warn("failed, but lease was already lost; outcome discarded", "err", err)
 		case ferr != nil:
 			log.Warn("could not record failure", "err", ferr)
 		case j.Attempts >= j.MaxAttempts:
+			outcome = "dead"
 			log.Error("failed on final attempt; sent to dead-letter queue", "err", err)
 		default:
+			outcome = "retried"
 			log.Warn("failed; will retry", "err", err, "retry_in", delay.Round(time.Millisecond))
 		}
 	}

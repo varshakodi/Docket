@@ -12,9 +12,12 @@ const usage = `docket - a durable job queue on PostgreSQL
 
 Usage:
   docket enqueue --queue NAME --payload JSON [--key K] [--delay 30s] [--priority N]
-  docket work    --queue NAME [--concurrency N] [--grace 25s]
+  docket work    --queue NAME [--concurrency N] [--grace 25s] [--metrics-addr :9090]
                                            claim and run jobs until Ctrl-C
-  docket status  ID                        show one job
+  docket status  [--server HOST:PORT] ID   show one job
+
+  enqueue and status accept --server HOST:PORT (before other arguments) to
+  go through a docket-server over gRPC instead of connecting to the database.
   docket dlq     list [--queue NAME]       show jobs that gave up
   docket dlq     requeue ID                give a dead job a fresh start
   docket bench   [--jobs N] [--workers 1,2,4,8,16] [--mode both]
