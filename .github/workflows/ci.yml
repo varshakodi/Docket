@@ -97,6 +97,13 @@ jobs:
           done
           echo "job never succeeded"; docker compose logs; exit 1
 
+      # The image is alpine, which ships busybox wget -- enough to prove the
+      # dashboard's JSON endpoint answers from inside the stack.
+      - name: Dashboard answers
+        run: |
+          docker compose run --rm --no-deps --entrypoint wget worker -qO- http://api:8080/api/stats | tee /tmp/stats.json
+          grep -q '"depths"' /tmp/stats.json
+
       - name: Tear down
         if: always()
         run: docker compose down -v

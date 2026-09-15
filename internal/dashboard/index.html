@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docket</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e8ee; --muted: #8b93a7;
+    --pending: #d9a441; --running: #4c8dff; --succeeded: #3ec28f; --dead: #f25f5c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 14px; padding: 18px 28px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 18px; letter-spacing: .04em; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header .status { margin-left: auto; color: var(--muted); font-size: 12px; }
+  header .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--succeeded); margin-right: 6px; }
+  header .dot.off { background: var(--dead); }
+  main { padding: 22px 28px; display: grid; gap: 24px; max-width: 1280px; margin: 0 auto; }
+  h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
+  .queues { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .card .name { font-weight: 600; font-size: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; }
+  .card .name .age { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .card .name .age.warn { color: var(--pending); }
+  .counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .counts div { text-align: center; padding: 6px 0; border-radius: 6px; background: #1d212a; }
+  .counts b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .counts span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .counts .pending b { color: var(--pending); }  .counts .running b { color: var(--running); }
+  .counts .succeeded b { color: var(--succeeded); } .counts .dead b { color: var(--dead); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; background: #13161c; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; color: var(--muted); }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; letter-spacing: .03em; }
+  .pill.pending { background: #3a2f14; color: var(--pending); } .pill.running { background: #16294d; color: var(--running); }
+  .pill.succeeded { background: #133a2c; color: var(--succeeded); } .pill.dead { background: #4a1f1e; color: var(--dead); }
+  .err { color: var(--dead); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  button { background: #22314f; color: var(--running); border: 1px solid #2f4470; border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  button:hover { background: #2a3b60; }
+  .empty { color: var(--muted); padding: 18px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DOCKET</h1>
+  <span class="sub">job queue on PostgreSQL</span>
+  <span class="status"><span class="dot" id="dot"></span><span id="updated">connecting…</span></span>
+</header>
+
+<main>
+  <section>
+    <h2>Queues</h2>
+    <div class="queues" id="queues"><div class="empty">no jobs yet</div></div>
+  </section>
+
+  <section>
+    <div class="toolbar">
+      <h2 style="margin:0">Recent jobs</h2>
+      <select id="stateFilter">
+        <option value="">all states</option>
+        <option value="pending">pending</option>
+        <option value="running">running</option>
+        <option value="succeeded">succeeded</option>
+        <option value="dead">dead</option>
+      </select>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>Queue</th><th>State</th><th>Attempts</th><th>Worker</th><th>Payload</th><th>Updated</th><th>Last error</th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Dead-letter queue</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Queue</th><th>Attempts</th><th>Last error</th><th>Died</th><th></th></tr></thead>
+      <tbody id="dlq"></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const STATES = ["pending", "running", "succeeded", "dead"];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function ago(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+function dur(sec) {
+  if (sec < 60) return `${Math.round(sec)}s`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  return `${(sec / 3600).toFixed(1)}h`;
+}
+function truncate(s, n) { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+
+function renderQueues(stats) {
+  const byQueue = {};
+  for (const d of stats.depths) (byQueue[d.queue] ||= {})[d.state] = d.count;
+  const ages = Object.fromEntries(stats.oldest_pending.map((a) => [a.queue, a.seconds]));
+  const names = Object.keys(byQueue).sort();
+  if (!names.length) { $("queues").innerHTML = '<div class="empty">no jobs yet</div>'; return; }
+  $("queues").innerHTML = names.map((q) => {
+    const c = byQueue[q];
+    const age = ages[q];
+    const ageHtml = age == null ? '<span class="age">no backlog</span>'
+      : `<span class="age ${age > 30 ? "warn" : ""}">oldest waiting ${dur(age)}</span>`;
+    return `<div class="card"><div class="name"><span>${esc(q)}</span>${ageHtml}</div>
+      <div class="counts">${STATES.map((s) => `<div class="${s}"><b>${c[s] || 0}</b><span>${s}</span></div>`).join("")}</div></div>`;
+  }).join("");
+}
+
+function renderJobs(jobs) {
+  if (!jobs.length) { $("jobs").innerHTML = '<tr><td colspan="8" class="empty">nothing here</td></tr>'; return; }
+  $("jobs").innerHTML = jobs.map((j) => `<tr>
+    <td class="num">${j.id}</td>
+    <td>${esc(j.queue)}</td>
+    <td><span class="pill ${j.state}">${j.state}</span></td>
+    <td class="num">${j.attempts} / ${j.max_attempts}</td>
+    <td class="mono muted">${esc(truncate(j.worker_id, 28))}</td>
+    <td class="mono">${esc(truncate(JSON.stringify(j.payload), 48))}</td>
+    <td class="muted">${ago(j.updated_at)}</td>
+    <td class="err">${esc(truncate(j.last_error, 60))}</td>
+  </tr>`).join("");
+}
+
+function renderDLQ(jobs) {
+  if (!jobs.length) { $("dlq").innerHTML = '<tr><td colspan="6" class="empty">empty — nothing has given up</td></tr>'; return; }
+  $("dlq").innerHTML = jobs.map((j) => `<tr>
+    <td class="num">${j.id}</td>
+    <td>${esc(j.queue)}</td>
+    <td class="num">${j.attempts} / ${j.max_attempts}</td>
+    <td class="err">${esc(truncate(j.last_error, 80))}</td>
+    <td class="muted">${ago(j.updated_at)}</td>
+    <td><button data-id="${j.id}">requeue</button></td>
+  </tr>`).join("");
+}
+
+async function refresh() {
+  try {
+    const state = $("stateFilter").value;
+    const [stats, jobs, dlq] = await Promise.all([
+      fetch("/api/stats").then((r) => r.json()),
+      fetch(`/api/jobs?limit=40${state ? "&state=" + state : ""}`).then((r) => r.json()),
+      fetch("/api/jobs?state=dead&limit=100").then((r) => r.json()),
+    ]);
+    renderQueues(stats); renderJobs(jobs); renderDLQ(dlq);
+    $("dot").classList.remove("off");
+    $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("dot").classList.add("off");
+    $("updated").textContent = "disconnected";
+  }
+}
+
+document.addEventListener("click", async (e) => {
+  const id = e.target?.dataset?.id;
+  if (!id) return;
+  e.target.disabled = true;
+  await fetch(`/api/jobs/${id}/requeue`, { method: "POST" });
+  refresh();
+});
+$("stateFilter").addEventListener("change", refresh);
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

@@ -9,6 +9,8 @@ you like; no two ever pick up the same job. A worker that dies mid-job has its
 work handed to another one automatically. Failures retry with exponential
 backoff and land in a dead-letter queue when they give up.
 
+![The Docket dashboard: three queues with per-state counts, a backlog-age warning on a queue with no workers, and a table of recent jobs with running, succeeded and dead states](docs/dashboard.png)
+
 There is no queue server. **Postgres is the queue** — storage and coordination in
 one place — which is what makes the whole thing about a thousand lines.
 
@@ -31,8 +33,8 @@ one place — which is what makes the whole thing about a thousand lines.
 
 Complete. Enqueue, claim, complete; retries with jittered backoff; leases,
 heartbeats and crash recovery; dead-letter queue; concurrency; graceful
-shutdown; idempotent enqueue; Prometheus metrics; a gRPC API; a benchmark
-harness with a naive-locking comparison; fault-injection tests that `SIGKILL`
+shutdown; idempotent enqueue; Prometheus metrics; a gRPC API; a web dashboard;
+a benchmark harness with a naive-locking comparison; fault-injection tests that `SIGKILL`
 real worker processes; a Docker image and compose stack, both exercised in CI.
 
 What was deliberately left out, and why, is in [FUTURE.md](FUTURE.md).
@@ -42,7 +44,7 @@ What was deliberately left out, and why, is in [FUTURE.md](FUTURE.md).
 **With Docker** (nothing else needed):
 
 ```bash
-docker compose up -d      # Postgres + migrations + a 4-lane worker + the gRPC API
+docker compose up -d      # Postgres + migrations + a 4-lane worker + gRPC API + dashboard on :8080
 docker compose run --rm worker enqueue --queue default --payload '{"sleep_ms":1000}'
 docker compose run --rm worker status 1
 docker compose logs -f worker
@@ -205,6 +207,22 @@ Depth and age come from one query every 5 s, because the backlog lives in the
 database rather than in any worker's memory. The rest update in-process as jobs
 run.
 
+## Dashboard
+
+`docket-server` serves a dashboard at `--http` (default `:8080`, pictured
+above): queue depths with the oldest-waiting age per queue, recent jobs, and
+the dead-letter queue with a requeue button. It refreshes every two seconds.
+
+It is one HTML file embedded in the binary — no framework, no build step, no
+new dependency. The three JSON endpoints behind it are plain HTTP if you want
+to script against them:
+
+```
+GET  /api/stats                      depths per queue and state; oldest pending age
+GET  /api/jobs?queue=&state=&limit=  recent jobs, most recently updated first
+POST /api/jobs/{id}/requeue          dead → pending with a fresh attempt budget
+```
+
 ## gRPC API
 
 `docket-server` exposes the queue over gRPC (default `:50051`) so services in
@@ -235,7 +253,7 @@ nothing. The API is for producers; workers talk to Postgres.
 ## CLI
 
 ```
-docket-server  [--addr :50051]
+docket-server  [--addr :50051] [--http :8080]
 
 docket enqueue --queue NAME --payload JSON [--key K] [--delay 30s] [--priority N] [--max-attempts N]
 docket work    --queue NAME [--concurrency N] [--lease 30s] [--grace 25s]
@@ -362,6 +380,7 @@ cmd/docket/          CLI (also a gRPC client with --server), plus the real-proce
 cmd/docket-server/   the gRPC API server
 api/docketv1/        the .proto contract and the Go code generated from it
 internal/api/        gRPC service implementation: protobuf in, store calls, protobuf out
+internal/dashboard/  the embedded web dashboard and its JSON endpoints
 internal/store/      every SQL statement lives here; nothing else touches the database
 internal/worker/     claim loop, concurrency, heartbeat, outcome recording, graceful shutdown
 internal/reaper/     expired-lease sweep

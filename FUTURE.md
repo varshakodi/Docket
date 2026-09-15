@@ -23,8 +23,11 @@ benchmarks in the README show where that ceiling is.
 **Multi-tenancy and authentication.** Docket is a single-trust-domain
 component. Put it behind whatever already authenticates your services.
 
-**A web dashboard.** The CLI covers inspection (`status`, `dlq list`). A UI
-would add a week and demonstrate nothing about the queue itself.
+**A frontend application.** There is a dashboard, but it is deliberately one
+embedded HTML file with no build step: queue depths, recent jobs, the
+dead-letter queue and a requeue button. A React app with routing, auth and a
+Node toolchain would add a week and shift the project's centre of gravity
+away from the queue itself.
 
 **Non-Postgres backends.** A Redis or SQLite backend behind the same interface
 is feasible, but every guarantee in the README leans on Postgres specifics --

@@ -1,5 +1,6 @@
 // Command docket-server exposes a Docket queue over gRPC so that services in
-// any language can enqueue and inspect jobs without database access.
+// any language can enqueue and inspect jobs without database access, and
+// serves a small web dashboard.
 package main
 
 import (
@@ -12,20 +13,22 @@ import (
 	"syscall"
 
 	"github.com/varshakodi/docket/internal/api"
+	"github.com/varshakodi/docket/internal/dashboard"
 	"github.com/varshakodi/docket/internal/store"
 )
 
 func main() {
-	addr := flag.String("addr", ":50051", "address to listen on")
+	addr := flag.String("addr", ":50051", "gRPC address to listen on")
+	httpAddr := flag.String("http", ":8080", "dashboard address (empty to disable)")
 	flag.Parse()
 
-	if err := run(*addr); err != nil {
+	if err := run(*addr, *httpAddr); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr string) error {
+func run(addr, httpAddr string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -37,6 +40,9 @@ func run(addr string) error {
 	}
 	defer s.Close()
 
+	if httpAddr != "" {
+		go dashboard.Serve(ctx, httpAddr, s, log)
+	}
 	return api.Serve(ctx, addr, s, log)
 }
 

@@ -1,6 +1,7 @@
 # One-command local setup:
 #
-#   docker compose up -d            Postgres, migrations, a worker, and the gRPC API on :50051
+#   docker compose up -d            Postgres, migrations, a worker, the gRPC API on :50051
+#                                   and the dashboard on http://localhost:8080
 #   docker compose run --rm worker enqueue --queue default --payload '{"sleep_ms":1000}'
 #   docker compose run --rm worker status 1
 #   docker compose logs -f worker
@@ -55,7 +56,8 @@ services:
     environment:
       DATABASE_URL: postgres://docket:docket@postgres:5432/docket?sslmode=disable
     ports:
-      - "50051:50051"
+      - "50051:50051"   # gRPC
+      - "8080:8080"     # dashboard: http://localhost:8080
     depends_on:
       migrate:
         condition: service_completed_successfully
